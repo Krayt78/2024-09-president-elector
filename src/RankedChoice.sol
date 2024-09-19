@@ -47,6 +47,10 @@ contract RankedChoice is EIP712 {
         _rankCandidates(orderedCandidates, msg.sender);
     }
 
+    //@audit This function can be abused
+    // Since the signature is not unique (no nonce or timestamp used in the signature process)
+    // An attacker can replay the signature to rank the candidates multiple times
+    // Or use a signature used in the past to rank the candidates in another election
     function rankCandidatesBySig(
         address[] memory orderedCandidates,
         bytes memory signature
@@ -57,6 +61,25 @@ contract RankedChoice is EIP712 {
         _rankCandidates(orderedCandidates, signer);
     }
 
+    struct ReplayResistantMessage {
+        address[] orderedCandidates;
+        uint256 deadline;
+        uint256 nonce;
+    }
+
+    mapping(address => mapping(uint256 => bool)) public noncesUsed;
+    mapping(address => uint256) public latestNonce;
+
+    function ReplayResistantRankCandidatesBySig(
+        ReplayResistantMessage memory orderedCandidatesMessage,
+        bytes memory signature
+    ) external {
+        bytes32 structHash = keccak256(abi.encode(TYPEHASH, orderedCandidatesMessage));
+        bytes32 hash = _hashTypedDataV4(structHash);
+        address signer = ECDSA.recover(hash, signature);
+        _rankCandidates(orderedCandidatesMessage.orderedCandidates, signer);
+    }
+
     function selectPresident() external {
         if (
             block.timestamp - s_previousVoteEndTimeStamp <=
@@ -65,11 +88,15 @@ contract RankedChoice is EIP712 {
             revert RankedChoice__NotTimeToVote();
         }
 
+        //we go through all voters
         for (uint256 i = 0; i < VOTERS.length; i++) {
+            // we get their ordered candidates
             address[] memory orderedCandidates = s_rankings[VOTERS[i]][
                 s_voteNumber
             ];
             for (uint256 j = 0; j < orderedCandidates.length; j++) {
+                //@audit we never check that the orderedCandidates are valid, aka that they are not chosen multiple times and the values are not default
+                //by default the array is filled with 0x0
                 if (!_isInArray(s_candidateList, orderedCandidates[j])) {
                     s_candidateList.push(orderedCandidates[j]);
                 }
@@ -99,19 +126,20 @@ contract RankedChoice is EIP712 {
         address[] memory candidateList,
         uint256 roundNumber
     ) internal returns (address[] memory) {
+        //if we have a single candidate, we return it
         if (candidateList.length == 1) {
             return candidateList;
         }
 
         // Tally up the picks
-        for (uint256 i = 0; i < VOTERS.length; i++) {
+        for (uint256 i = 0; i < VOTERS.length; i++) { //@audit this should be cached in a variable
             for (
                 uint256 j = 0;
-                j < s_rankings[VOTERS[i]][s_voteNumber].length;
+                j < s_rankings[VOTERS[i]][s_voteNumber].length; //@audit this should be cached in a variable
                 j++
             ) {
                 address candidate = s_rankings[VOTERS[i]][s_voteNumber][j];
-                if (_isInArray(candidateList, candidate)) {
+                if (_isInArray(candidateList, candidate)) { //@audit there are no check to make sure someone didnt vote for the same person 
                     s_candidateVotesByRound[candidate][s_voteNumber][
                         roundNumber
                     ] += 1;
